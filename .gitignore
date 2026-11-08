@@ -1,0 +1,62 @@
+# Publish only the application, launchers, assets, and documentation below.
+# Everything else stays local: tests, config.json, .venv, caches, logs,
+# editor files, credentials, and the reference-only vendor/ADLX SDK.
+/*
+!/.gitignore
+!/AGENTS.md
+!/README.md
+!/requirements.txt
+!/config.example.json
+
+# Application modules (tests intentionally excluded).
+!/backdrop.py
+!/cpu_temperature.py
+!/font_support.py
+!/fps_counter.py
+!/frametime_graph.py
+!/game_visibility.py
+!/hud.py
+!/hud_control.py
+!/settings.py
+!/settings_qt.py
+!/settings_store.py
+!/single_instance.py
+!/ui_motion.py
+!/window_visibility.py
+
+# Windows launchers and shortcut maintenance.
+!/Check-ADLX.cmd
+!/Settings.cmd
+!/Start-HUD.cmd
+!/Create-DesktopShortcut.ps1
+
+# Maintained documentation only.
+!/docs/
+/docs/*
+!/docs/*.md
+
+# Runtime artwork and bundled fonts, including their existing license.
+!/assets/
+/assets/*
+!/assets/app-icon.svg
+!/assets/app-icon.png
+!/assets/app-icon.ico
+!/assets/check.svg
+!/assets/fonts/
+/assets/fonts/*
+!/assets/fonts/NotoSans-Regular.ttf
+!/assets/fonts/NotoSans-SemiBold.ttf
+!/assets/fonts/OFL.txt
+
+# Rebuild the shipped icon from its editable source.
+!/tools/
+/tools/*
+!/tools/build_icon.py
+
+# Runtime capture dependency and its existing upstream license.
+!/vendor/
+/vendor/*
+!/vendor/PresentMon/
+/vendor/PresentMon/*
+!/vendor/PresentMon/PresentMon-2.6.0-x64.exe
+!/vendor/PresentMon/LICENSE.txt
