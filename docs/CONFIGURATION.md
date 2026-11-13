@@ -11,6 +11,11 @@ The live file is excluded from GitHub. On a fresh checkout, copy the published
 font or game paths; an empty AMD profiles path uses the OS-resolved default.
 Do not copy the example over an existing user's configuration.
 
+The editor separately remembers window size, Border/Shadow expansion, and the selected tab in
+local `settings-ui.ini`. These UI preferences save automatically without writing
+`config.json` or committing pending HUD edits. Missing preferences use expanded
+sections and the Appearance tab.
+
 ## Defaults, required keys, and validation
 
 This is a reference for the implementation, not a complete schema enforced uniformly
@@ -60,8 +65,10 @@ the runtime fallback is false. The shipped config includes the key, so normal us
 does not exercise this legacy sparse-config discrepancy. Do not claim that loading
 an incomplete JSON file produces a fully uniform default config.
 
-With translucent Acrylic and nonzero radius, runtime uses native 8 px corners while
-preserving the saved radius. `blur=true` and `blur_opacity=1` produce an opaque plain
+Translucent Acrylic supports every configured radius through a rounded Windows
+Composition clip; changing radius does not disable blur or override the saved value.
+Radius is clamped at drawing time to half the panel dimensions.
+`blur=true` and `blur_opacity=1` produce an opaque plain
 background with custom corners; the unnecessary Acrylic layer is omitted.
 
 Fonts are referenced, not copied or globally installed. A missing file falls back at
@@ -91,15 +98,22 @@ controls display 0–100 (or 20–100 for background), but JSON stores fractions
 
 | Key | Default | Meaning and bounds |
 | --- | --- | --- |
-| `frametime_graph` | `true` | Enable graph beneath the four metric rows |
+| `frametime_graph` | `true` | Enable graph beneath the metric rows |
 | `frametime_graph_height` | `48` | Integer graph height, 24–160 px |
 | `frametime_color` | `#ebbcba` | Graph heading and stroke color |
 
 Seven-second history and the approximately 60 Hz animation target are currently code
 behavior, not configurable JSON fields. History is `hud.GRAPH_WINDOW_SECONDS`.
 `refresh_ms` does not change graph speed or animation cadence. Reveal playback adds
-an animation backlog, so the viewport is seven seconds relative to its drawing cursor.
+an animation backlog. The seven-second viewport scrolls at a constant rate,
+independently of the drawing cursor stopping at the last received sample.
 Do not add undocumented speed/range keys and expect them to be used automatically.
+
+The automatic **LSFG** row has no JSON key. It appears with `fps` enabled in `metrics`
+when native LS output is active on the recognized foreground game's monitor. It
+shares the FPS label color, uses `refresh_ms`, and reports measured displayed LS
+output FPS, including original frames. The graph continues to show game frametimes.
+Do not add `lsfg` to `metrics`; it is not an ADLX metric or a configurable row key.
 
 ### Shared palette
 
@@ -132,7 +146,7 @@ Palette restore is buffered and does not reset effect strengths, positions, or f
 | `ram` | ADLX SystemRAM divided by 1024, displayed GiB |
 | `fps` | PresentMon rolling rendered FPS; unavailable in a telemetry-only probe |
 
-The four displayed rows are fixed; `power`, `vram`, `clock`, and `fan` are primarily
+The four base rows are fixed; `power`, `vram`, `clock`, and `fan` are primarily
 available for diagnostic snapshots. If a displayed metric is not requested, it shows
 unavailable rather than adding or removing a row.
 

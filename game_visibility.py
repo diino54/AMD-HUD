@@ -75,15 +75,18 @@ class GameDetector:
             return None, None
         pid = wintypes.DWORD()
         self.user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
-        process = self.kernel32.OpenProcess(0x1000, False, pid.value)
+        return self.process_path(pid.value), pid.value
+
+    def process_path(self, pid):
+        process = self.kernel32.OpenProcess(0x1000, False, pid)
         if not process:
-            return None, None
+            return None
         try:
             buffer = ctypes.create_unicode_buffer(32768)
             size = wintypes.DWORD(len(buffer))
             if not self.kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(size)):
-                return None, None
-            return normalize_path(buffer.value), pid.value
+                return None
+            return normalize_path(buffer.value)
         finally:
             self.kernel32.CloseHandle(process)
 
@@ -106,3 +109,52 @@ class GameDetector:
         path = self.foreground_path()
         return {"foreground_executable": path, "foreground_game": self.games.get(path),
                 "recognized_games": self.games, "profile_error": self.profile_error}
+
+
+class LosslessScalingDetector:
+    """Find LS's native output on the recognized foreground game's monitor.
+
+    The native output class was observed with LSFG active; the WPF settings and
+    LosslessScalingBlk backing window do not qualify. This never recognizes a game.
+    """
+    def __init__(self, games):
+        self.games = games
+        self.user32 = games.user32
+        self.user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+        self.user32.FindWindowExW.restype = wintypes.HWND
+        self.user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        self.user32.IsWindowVisible.restype = wintypes.BOOL
+        self.user32.IsIconic.argtypes = [wintypes.HWND]
+        self.user32.IsIconic.restype = wintypes.BOOL
+        self.user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        self.user32.MonitorFromWindow.restype = wintypes.HANDLE
+        self.user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        self.user32.GetWindowRect.restype = wintypes.BOOL
+
+    def current_target(self, game):
+        if game is None:
+            return None
+        foreground = self.user32.GetForegroundWindow()
+        pid = wintypes.DWORD()
+        self.user32.GetWindowThreadProcessId(foreground, ctypes.byref(pid))
+        if pid.value != game["pid"]:
+            return None
+        monitor = self.user32.MonitorFromWindow(foreground, 0)
+        if not monitor:
+            return None
+        window = None
+        while True:
+            window = self.user32.FindWindowExW(None, window, "LosslessScaling", None)
+            if not window:
+                return None
+            if not self.user32.IsWindowVisible(window) or self.user32.IsIconic(window):
+                continue
+            if self.user32.MonitorFromWindow(window, 0) != monitor:
+                continue
+            rect = wintypes.RECT()
+            if not self.user32.GetWindowRect(window, ctypes.byref(rect)) or rect.right <= rect.left or rect.bottom <= rect.top:
+                continue
+            self.user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+            path = self.games.process_path(pid.value)
+            if path and ntpath.basename(path) == "losslessscaling.exe":
+                return {"pid": pid.value, "window": window, "path": path}

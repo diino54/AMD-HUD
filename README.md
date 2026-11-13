@@ -22,8 +22,10 @@ Documentation was reviewed against the local source on 2026-11-07. Start with
 ## Getting started
 
 - Open `Settings.cmd` to configure the HUD.
+- Run `Create-StartMenuShortcut.cmd` to create or refresh **AMD HUD** in the current
+  user's Start menu. It opens settings without a console window.
 - The **AMD HUD** desktop shortcut opens settings without a console window.
-  Run `Create-DesktopShortcut.ps1` to create or refresh it after project changes.
+  Run `Create-DesktopShortcut.cmd` to create or refresh it after project changes.
   The editable icon source is `assets/app-icon.svg`; rebuild its PNG and multi-size
   Windows ICO with `.venv\Scripts\python.exe tools\build_icon.py`.
 - The existing tabs are **Appearance**, **Behavior**, and **Games**.
@@ -52,8 +54,10 @@ Long game names and executable paths have tooltips containing their full values.
 
 Appearance contains background, text, color, border, and shadow controls. Scroll down to
 reach the border and shadow settings; the action buttons remain visible.
-Click **Border** or **Shadow** to collapse or expand its options. Both start expanded;
-folding a section preserves edits and does not save or change HUD configuration.
+Click **Border** or **Shadow** to collapse or expand its options. Both start expanded
+on first use. Section states, window size, and the selected tab are remembered automatically in
+local `settings-ui.ini`, independently of the HUD configuration. Folding preserves
+unsaved edits and does not require **Save and apply**.
 Settings includes short hover/focus transitions, press feedback, animated checkmarks,
 sliding tab selection, page/status fades, and smooth wheel scrolling. Section contents
 are progressively revealed without compressing their controls. Animations reverse
@@ -67,18 +71,20 @@ system-wide. Keep it at its saved location. If it later becomes unavailable, the
 the problem and falls back to Consolas. Columns remain aligned with proportional fonts.
 The settings application's own font is independent from the HUD font.
 
-**Show frametime graph** enables a sparkline beneath the four metric rows. It shows
+**Show frametime graph** enables a sparkline beneath the metric rows. It shows
 the last 7 seconds of actual PresentMon frame intervals for the active game's
 most active swap chain, with minimum and maximum values in milliseconds. Higher
 spikes mean slower frames. The graph targets 60 Hz independently of ADLX polling.
-It reuses canvas items and moves samples at subpixel positions for smoother scrolling.
+It reuses canvas items, prepares each image in a hidden buffer before display,
+and moves samples at subpixel positions for smoother scrolling.
 The antialiased line joins plotted samples with straight segments, retaining peaks
 without curved interpolation or averaging away stalls.
 Frame positions use PresentMon QPC timestamps rather than CSV arrival times.
 A drawing cursor progressively reveals known straight segments from the first
 received point. A 250 ms playback buffer absorbs ordinary delivery batches;
-additional backlogs above 120 ms catch up at up to 1.25x playback speed.
-It stops at the latest received frame instead of predicting missing measurements.
+the viewport scrolls at a constant speed independently of incoming batches.
+When drawing reaches the latest received frame, history keeps moving left and
+the right edge stays empty until more measurements arrive. No frames are predicted.
 The displayed range remains seven seconds; min/max use measured frames only.
 Downsampling retains peaks in time-anchored buckets about one pixel wide, so scrolling
 does not regroup existing samples. The vertical range expands for new spikes and
@@ -86,7 +92,9 @@ contracts gradually after they leave the window. Swap-chain selection resists br
 count changes and starts fresh history when switching sources.
 There is no dashed reference line. Hidden HUDs suspend animation-rate updates.
 **Graph height (px)** and **Graph color** control its appearance. Missing/stale data
-shows **Waiting for frame data**; no sample values are invented. Changing games or
+shows **Waiting for frame data**; no sample values are invented. The graph tolerates
+delayed CSV batches only while the source keeps advancing, with a 3-second maximum
+measured-frame age and a 1.5-second delivery timeout. Changing games or
 stopping capture clears the previous history. The graph is enabled by default.
 
 - Border: enable/disable, width 0-8 px, opacity 0-100%, and color.
@@ -98,8 +106,10 @@ stopping capture clears the previous history. The graph is enabled by default.
 - Rounded images and shadow masks are cached until the HUD size or configuration changes.
 
 The optional Acrylic material uses the Windows compositor. Text stays sharp above the
-blurred layer. Acrylic uses Windows' 8 px rounded corners to avoid black artifacts caused
-by GDI window regions. At 100% material opacity, the unnecessary Acrylic layer is omitted
+blurred layer. Acrylic uses a Windows Composition host-backdrop brush and tint,
+clipped together to the selected corner radius. Blur stays enabled for custom radii,
+including square corners. GDI window regions are avoided because they cause black
+artifacts. At 100% material opacity, the unnecessary Acrylic layer is omitted
 and the custom corner radius is used. If Windows rejects Acrylic, a plain background is used.
 No additional system component or driver is installed for the appearance effects.
 
@@ -153,8 +163,10 @@ Use the settings window, or edit `config.json` and restart the HUD.
 | `excluded_executables` | Executable names excluded from detection |
 | `metrics` | Telemetry fields requested by the HUD |
 
-The visible layout has four rows: GPU usage/temperature, CPU usage/temperature,
-system RAM, and FPS/frame time. Other GPU fields remain available to diagnostic reads.
+The base layout has four rows: GPU usage/temperature, CPU usage/temperature,
+system RAM, and FPS/frame time. Active Lossless Scaling adds an **LSFG** FPS row
+below the ordinary FPS row and above the graph. Other GPU fields remain available
+to diagnostic reads.
 `power` is ADLX `GPUPower`, not necessarily total board power. `N/A` means that a
 supported, fresh value is unavailable.
 
@@ -181,12 +193,23 @@ CPU tuning/control fields are not modified.
 
 ## FPS
 
-Portable PresentMon 2.6.0 captures only the active game's process. FPS is calculated from
+Portable PresentMon 2.6.0 captures the active game's process. FPS is calculated from
 Present intervals in a rolling window of up to 1.5 seconds. With multiple swap chains,
 the most active one is selected rather than summing their rates. This measures rendered
 FPS and does not guarantee inclusion of generated frames. Startup or missing events show
 `N/A`. Frame data is processed in memory rather than written to a trace file.
 `DXGI` is labeled `DirectX`; it does not identify a specific DirectX version.
+
+With a recognized foreground game and an active native Lossless Scaling output
+on the same monitor, the HUD automatically adds **LSFG** and its FPS count beneath
+the game FPS row. A separate PID-filtered PresentMon session measures the LS output
+using displayed-frame intervals and excludes dropped frames. This is total LS output
+FPS, including original and generated frames when LSFG is enabled, not a count of
+generated frames alone. It does not infer a multiplier or read LS memory.
+The LS settings window alone does not enable the row. Starting/stale capture shows
+**N/A**; stopping scaling removes the row. Alt+Tab away stops both captures.
+The graph remains the game's frametime graph. LSFG follows the metric text refresh
+interval and uses the FPS label color. There is no extra saved setting.
 
 ## Components
 
@@ -207,7 +230,7 @@ does not require compiling C++ or installing Visual Studio.
 
 Use 64-bit Python 3.12 with Tkinter. From the project directory:
 
-```powershell
+```cmd
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe hud.py --probe

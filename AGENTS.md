@@ -9,7 +9,7 @@ extra approval step or prevent an explicitly requested behavior change.
 
 - Use English for code, identifiers, comments, UI text, accessible names, tooltips,
   dialogs, exceptions, tests, documentation, and launcher messages.
-- Communicate with the user in Polish.
+- Communicate with the user in English.
 - Preserve real paths, game names, proper names, user data, and third-party files.
 - Report what was actually changed and checked. Distinguish automated tests,
   desktop diagnostics, and observations inside a real game.
@@ -50,9 +50,11 @@ behavior just to make it agree with an old description.
   Links are in `README.md`. The settings theme is independent from the HUD palette.
 - Number controls must not change values on mouse-wheel scrolling. Preserve
   accessible names and tooltips for truncated game names and paths.
-- Border and Shadow have inline collapsible headings, expanded initially. Collapsing
-  is session-only presentation state: preserve edits, do not save or mark config dirty,
-  and reveal a collapsed section when one of its fields fails validation.
+- Border and Shadow have inline collapsible headings, expanded on first use.
+  Section expansion, window size, and the selected tab are remembered automatically
+  in local `settings-ui.ini`.
+  Preserve edits, do not save or mark HUD config dirty, and reveal a collapsed
+  section when one of its fields fails validation.
 - Settings motion lives in `ui_motion.py`. Keep feedback short and interruptible:
   button press about 65 ms, hover 140 ms, page fade 170 ms, tab slide 180 ms, section
   reveal 220 ms. Retarget from the current painted value; never queue old transitions.
@@ -81,7 +83,9 @@ behavior just to make it agree with an old description.
 ## HUD layout, appearance, and fonts
 
 - Preserve the four rows: GPU usage/temperature, CPU usage/temperature, RAM,
-  FPS/API and frame interval. The optional graph belongs beneath these rows.
+  FPS/API and frame interval. Active Lossless Scaling adds an automatic LSFG FPS
+  row below FPS and above the graph, using the FPS accent. Preserve the four base
+  rows when LS output is inactive.
 - Keep explicit pixel columns so proportional custom fonts remain aligned.
 - Separate numeric values from `FPS`, `GiB`, and `ms` with one space (for example,
   `60 FPS`, `12.5 GiB`, and `16.7 ms`).
@@ -93,8 +97,10 @@ behavior just to make it agree with an old description.
 - Keep sharp text separate from native background/frame/shadow windows.
 - Preserve per-pixel alpha at border and shadow edges. Binary window regions
   reintroduce jagged corners.
-- Translucent Acrylic uses native 8 px DWM corners. GDI clipping regions previously
-  caused black-corner/background artifacts and must not be reapplied to this layer.
+- Translucent Acrylic uses a Windows Composition host-backdrop brush and tint,
+  clipped together with a rounded-rectangle geometry at the selected radius.
+  Do not restrict blur to native DWM corner sizes or apply GDI window regions;
+  those previously caused black-corner/background artifacts.
 - Opaque backgrounds omit unnecessary Acrylic. Preserve plain-background fallback
   when Windows rejects the material.
 
@@ -106,7 +112,10 @@ behavior just to make it agree with an old description.
   project's config. A matching basename alone must not recognize another executable.
 - Preserve exclusions for launchers, removed games, app/link/AI profiles, and
   explicitly excluded executable names.
-- Hiding stops PresentMon capture. Returning to a game starts fresh history;
+- LSFG output detection requires a recognized foreground game and the visible
+  native `LosslessScaling` output window on the same monitor. LS settings alone
+  must not enable capture. Keep LS excluded from game recognition.
+- Hiding stops both game and auxiliary LS PresentMon capture. Returning to a game starts fresh history;
   clear old displayed values instead of flashing the previous game's readings.
 - HUD windows must never take the game's activation or keyboard focus.
 - Keep `prevent_window_activation()` installed before Tk creates its first native
@@ -129,6 +138,9 @@ behavior just to make it agree with an old description.
 - PresentMon uses `--qpc_time`; convert CSV `QPCTime` with Windows QPC frequency.
   Frame ages, retries, animation, and reveal use `time.perf_counter()`.
 - Never timestamp frames by CSV receipt time: ETW/pipe delivery can arrive in batches.
+  Receipt times may track delivery liveness only; the graph tolerates advancing
+  batches up to 3 seconds late with a 1.5-second delivery timeout. Source-change
+  history starts at the selected chain's latest measured timestamp, not receipt time.
 - Never mix `time.monotonic()` with QPC frame timestamps. On the verified Python 3.12
   runtime it uses `GetTickCount64()`, with a different epoch/resolution. Visibility
   and CPU sampling may retain their separate monotonic clocks.
@@ -136,6 +148,8 @@ behavior just to make it agree with an old description.
   during scrolling and can make an unchanged trace jump.
 - `GraphReveal` begins at the first point and progressively clips known straight
   segments. Its interpolated endpoint is a drawing boundary, not a measurement.
+- Keep viewport scrolling at elapsed QPC time independently of the reveal cursor.
+  Exhausting a delivery batch stops drawing, not the movement of measured history.
 - Never predict beyond received data. Missing/stale data returns to the waiting
   state. Min/max must use measured samples, not interpolated endpoints.
 - Request an additional 1.5 seconds of capture history for reveal backlog while
@@ -144,7 +158,9 @@ behavior just to make it agree with an old description.
   new spike is intentional; do not hide it with fabricated or averaged data.
 - Keep swap-chain hysteresis and fresh history on source changes. Do not multiply
   FPS by summing swap chains or switch sources on every near-tie.
-- Reuse Tk image/canvas items and retain the `PhotoImage` reference. Match the raster
+- Reuse the two Tk image buffers and canvas items; retain both `PhotoImage` references.
+  Decode into the hidden buffer, then swap the canvas image. Never reconfigure the
+  displayed photo in place. Match the raster
   background to Tk's color key so it does not become a solid rectangular block.
 - Hidden HUDs do not need animation-rate timer wakeups.
 
@@ -158,13 +174,13 @@ behavior just to make it agree with an old description.
 | Palette, persistence validation, digest, atomic save | `settings_store.py` |
 | PresentMon process, CSV reader, FPS, swap chains | `fps_counter.py` |
 | Peak reduction, reveal, scale, plot rasterization | `frametime_graph.py` |
-| Native Acrylic/frame/shadow and premultiplied alpha | `backdrop.py` |
+| Native Acrylic/frame/shadow and premultiplied alpha | `backdrop.py`, `composition_backdrop.py` |
 | Non-activating mapping and thread-local guard | `window_visibility.py` |
 | Profiles and foreground process recognition | `game_visibility.py` |
 | Private AMD CPU telemetry adapter | `cpu_temperature.py` |
 | Font name parsing and private font lifetime | `font_support.py` |
 | Named events and per-directory instance mutex | `hud_control.py`, `single_instance.py` |
-| Icon and shortcut | `assets/app-icon.svg`, `tools/build_icon.py`, `Create-DesktopShortcut.ps1` |
+| Icon and shortcut | `assets/app-icon.svg`, `tools/build_icon.py`, `Create-DesktopShortcut.cmd` |
 | Regression tests | `test_hud.py`, `test_settings.py` |
 
 ## Native resource and telemetry rules
@@ -175,7 +191,9 @@ behavior just to make it agree with an old description.
 - Clean up worker threads, mappings, handles, hotkeys, windows, and fonts on failure
   as well as normal exit. Preserve the instance mutex through config reload.
 - PresentMon runs with `CREATE_NO_WINDOW`, a PID filter, and its own `AMDHUD-<pid>`
-  ETW session. Terminate only the session owned by that counter.
+  ETW session. The auxiliary LS output counter uses `AMDHUD-<pid>-LSFG` with the
+  LS PID and displayed-frame intervals, excluding dropped frames. Never multiply
+  game FPS to fabricate LS output. Terminate only the session owned by each counter.
 - Never kill unrelated Python, AMD, PresentMon, or game processes to clear a conflict.
 - CPU temperature reuses the existing `CPUMetricsServer.exe`. Do not introduce a
   driver, sensor service, or third-party monitoring dependency incidentally.
@@ -207,15 +225,15 @@ behavior just to make it agree with an old description.
 7. Refresh the desktop shortcut after every completed change, including documentation.
    Report actual checks and any remaining limitations.
 
-PowerShell commands from the project directory:
+CMD commands from the project directory:
 
-```powershell
-& .\.venv\Scripts\python.exe -m unittest -q test_hud test_settings
-& .\.venv\Scripts\python.exe hud.py --probe
-& .\.venv\Scripts\python.exe hud.py --probe-game
-# Requires the HUD instance to be stopped; temporarily displays outside games.
-& .\.venv\Scripts\python.exe hud.py --smoke-test
-& .\Create-DesktopShortcut.ps1
+```cmd
+.\.venv\Scripts\python.exe -m unittest -q test_hud test_settings
+.\.venv\Scripts\python.exe hud.py --probe
+.\.venv\Scripts\python.exe hud.py --probe-game
+rem Requires the HUD instance to be stopped; temporarily displays outside games.
+.\.venv\Scripts\python.exe hud.py --smoke-test
+.\Create-DesktopShortcut.cmd
 ```
 
 Use the available permission mechanism for actual filesystem/sandbox boundaries.
@@ -225,12 +243,14 @@ test scope, temporary directories, and manual verification limits.
 
 ## Desktop shortcut and icon completion rule
 
-- Run `Create-DesktopShortcut.ps1` after each completed fix, feature, or docs update.
+- Run `Create-DesktopShortcut.cmd` after each completed fix, feature, or docs update.
 - Maintain one **AMD HUD.lnk** in the OS-resolved desktop directory.
 - Target this project's `.venv\Scripts\pythonw.exe` with `settings.py`, the project
   working directory, and `assets/app-icon.ico`.
 - Do not create dated/numbered duplicates or alter unrelated shortcuts.
-- Use `-DestinationDirectory` for a scratch check when useful.
+- `Create-StartMenuShortcut.cmd` creates the same settings shortcut in the current
+  user's OS-resolved Start menu Programs folder using `tools/create_shortcut.vbs`.
+- Pass a destination directory as the first argument for a scratch check when useful.
 - Edit `assets/app-icon.svg`, then run `tools/build_icon.py` to regenerate PNG/ICO.
   Keep all three together; the ICO contains nine sizes from 16 to 256 px.
 - Use the existing permission mechanism if the desktop is outside writable roots;

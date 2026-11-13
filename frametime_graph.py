@@ -29,6 +29,7 @@ class GraphReveal:
         self.cursor = None
         self.updated_at = None
         self.latest = None
+        self.viewport = None
 
     def update(self, samples, now, window_seconds):
         samples = sorted((stamp, value) for stamp, value in samples
@@ -42,21 +43,23 @@ class GraphReveal:
             # Start with the first point, so even the initial delivery batch is
             # drawn progressively instead of appearing as a completed line.
             self.cursor = first
+            self.viewport = first
         else:
             elapsed = max(0, now - self.updated_at)
+            # Scrolling follows elapsed QPC time even when delivery runs dry.
+            # Only the drawing boundary stops at the latest measured frame.
+            self.viewport += elapsed
             # Keep a small delivery buffer so ordinary CSV batches do not make
             # playback repeatedly reach the end and stop. Never invent frames.
             available = max(first, min(latest, now - self.PLAYBACK_DELAY))
-            backlog = available - self.cursor
-            speed = 1 + min(.25, max(0, backlog - .12) * .5)
-            self.cursor = max(self.cursor, min(available, self.cursor + elapsed * speed))
+            self.cursor = max(self.cursor, min(available, self.viewport))
         self.updated_at, self.latest = now, latest
         revealed = []
         previous = None
         for stamp, value in samples:
             if stamp <= self.cursor:
                 previous = stamp, value
-                if stamp >= self.cursor - window_seconds:
+                if stamp >= self.viewport - window_seconds:
                     revealed.append((stamp, value))
             else:
                 if previous is not None and self.cursor > previous[0]:

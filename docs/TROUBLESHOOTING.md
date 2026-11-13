@@ -51,11 +51,13 @@ game's fullscreen behavior.
 
 - Tk uses a color key for text/plot; native layers supply the visible background.
   A mismatched graph raster background can appear as a solid rectangle.
-- Acrylic uses DWM's rounded preference. A GDI region can break Acrylic transparency.
+- Acrylic uses a compositor-owned rounded geometry clip. A GDI region can break
+  Acrylic transparency and must not be applied to its host window.
 - Frame and shadow use premultiplied BGRA and fractional edge coverage. Binary
   clipping or straight-alpha pixels cause jagged/dark edges.
-- Native Acrylic uses an effective 8 px radius while translucent; a custom saved
-  radius takes effect for the plain/opaque path. This difference is deliberate.
+- Custom radii retain host-backdrop blur and tint inside the same rounded clip.
+  The radius is never silently replaced with 8 px. Windows/system transparency
+  preferences can affect the host-backdrop appearance.
 - If Acrylic is rejected, a plain layer is the fallback; check stderr for the reason.
 
 ## Frametime line jumps, appears in chunks, or stops
@@ -68,9 +70,12 @@ game's fullscreen behavior.
 | Many frames appear together at one time | CSV receipt timestamps instead of QPC frame timestamps |
 | Frame ages are negative or several seconds wrong | Mixed `monotonic()`/QPC clock domains |
 | A new complete segment pops into view | Reveal cursor bypassed, or tip not clipped progressively |
-| Drawing ends and eventually shows waiting | No fresh received frames; expected stop rather than extrapolation |
+| Drawing ends and eventually shows waiting | No advancing delivery within 1.5 seconds or measured frames older than 3 seconds; history is not extrapolated |
+| Waiting flashes after a delivery batch or source switch | Treating CSV latency as a stopped stream, or cutting new history at receipt time instead of its measured timestamp |
+| Entire trace freezes when delivery stops | Viewport clock incorrectly capped by the last received frame |
+| Line flashes while data stays fresh | Reconfiguring the currently displayed Tk photo instead of decoding into the hidden buffer |
 
-History is seven seconds relative to the drawing cursor; it is not seven seconds of
+History is seven seconds relative to the independent scrolling clock; it is not seven seconds of
 guaranteed zero-latency wall-clock data. The cursor can trail incoming events while
 revealing a batch. Delivery/ETW latency cannot be eliminated by increasing GUI Hz.
 It is intentional that a real new stall expands the vertical range immediately.
@@ -83,7 +88,7 @@ new frame measurement. Do not conceal a stall by smoothing its data away.
 
 ## FPS or API says N/A / FPS
 
-PresentMon targets a recognized active game's PID only. Desktop preview can show
+The base PresentMon counter targets a recognized active game's PID. Desktop preview can show
 appearance and GPU/CPU values while FPS remains unavailable. Startup and no samples
 within 1.5 seconds are also unavailable conditions. Check the vendored executable,
 owned capture session, PID visibility, and current game recognition.
@@ -92,6 +97,20 @@ The graph itself can require capture even when `fps` is absent from `metrics`.
 Conversely, numeric FPS and its adjacent `1000/FPS` interval update on the slower
 metric polling interval. Rendered FPS is not a promise of frame-generation coverage.
 `DirectX` means a reported DXGI runtime; it is not a hardcoded DirectX 12 claim.
+
+## LSFG row is missing or unavailable
+
+The row requires FPS text, a recognized foreground game, and visible native LS
+output on the same monitor. Running the LS settings application alone is not enough.
+LS output is identified by its native `LosslessScaling` window class; a changed
+class in a future LS version may require reviewing detection. Do not remove the
+LS executable exclusion from game recognition to force desktop visibility.
+
+`LSFG` measures total displayed LS output, not generated-only FPS. It does not
+prove that frame generation is enabled: plain scaling uses the same output window.
+Startup, missing display events, or data older than 1.5 seconds show N/A. There is
+no multiplication of game FPS and no fallback to an invented output rate. Ordinary
+FPS and the graph still describe the game; LSFG can legitimately differ.
 
 ## CPU temperature says N/A
 
@@ -127,7 +146,7 @@ A custom font is a reference to its original TTF/OTF path. If moved, deleted, in
 or rejected by GDI, the HUD logs the issue and uses Consolas. Font reset keeps text
 size. Settings still uses Noto Sans regardless of HUD font choice.
 
-Rebuild icon assets only after SVG edits, then refresh `Create-DesktopShortcut.ps1`.
+Rebuild icon assets only after SVG edits, then refresh `Create-DesktopShortcut.cmd`.
 Check the shortcut target, working directory, and icon path. Existing windows may
 still have assets loaded from their previous process lifetime; restart a clean
 settings instance when necessary without losing edits. Do not clear global Windows

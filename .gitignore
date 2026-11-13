@@ -10,6 +10,7 @@
 
 # Application modules (tests intentionally excluded).
 !/backdrop.py
+!/composition_backdrop.py
 !/cpu_temperature.py
 !/font_support.py
 !/fps_counter.py
@@ -28,7 +29,8 @@
 !/Check-ADLX.cmd
 !/Settings.cmd
 !/Start-HUD.cmd
-!/Create-DesktopShortcut.ps1
+!/Create-DesktopShortcut.cmd
+!/Create-StartMenuShortcut.cmd
 
 # Maintained documentation only.
 !/docs/
@@ -52,6 +54,7 @@
 !/tools/
 /tools/*
 !/tools/build_icon.py
+!/tools/create_shortcut.vbs
 
 # Runtime capture dependency and its existing upstream license.
 !/vendor/

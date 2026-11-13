@@ -1,5 +1,5 @@
 """Read process-specific rendered FPS from PresentMon's ETW stream."""
-from collections import deque
+from collections import deque, OrderedDict
 import csv
 import os
 from pathlib import Path
@@ -11,13 +11,18 @@ import ctypes
 
 
 class FpsCounter:
-    def __init__(self):
+    FRESH_SECONDS = 1.5
+    MAX_DELIVERY_LAG_SECONDS = 3.0
+
+    def __init__(self, *, displayed=False):
         self.executable = Path(__file__).resolve().parent / "vendor/PresentMon/PresentMon-2.6.0-x64.exe"
-        self.session = "AMDHUD-" + str(os.getpid())
+        self.displayed = displayed
+        self.session = "AMDHUD-" + str(os.getpid()) + ("-LSFG" if displayed else "")
         self.process = None
         self.reader = None
         self.pid = None
         self.samples = deque(maxlen=32768)
+        self.deliveries = OrderedDict()
         self.lock = threading.Lock()
         self.retry_at = 0
         self.runtime = None
@@ -44,6 +49,11 @@ class FpsCounter:
         args = [str(self.executable), "--process_id", str(pid), "--output_stdout",
                 "--no_console_stats", "--v1_metrics", "--qpc_time", "--no_track_gpu", "--no_track_input",
                 "--session_name", self.session, "--stop_existing_session"]
+        if self.displayed:
+            args.append("--exclude_dropped")
+        else:
+            # The game graph needs Present timing, not display completion.
+            args.append("--no_track_display")
         self.process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                         text=True, encoding="utf-8-sig", errors="replace",
                                         creationflags=subprocess.CREATE_NO_WINDOW)
@@ -56,13 +66,28 @@ class FpsCounter:
         with process.stdout:
             for row in csv.DictReader(process.stdout):
                 try:
-                    interval = float(row["msBetweenPresents"])
+                    interval = float(row["msBetweenDisplayChange"] if self.displayed else row["msBetweenPresents"])
                     chain = row["SwapChainAddress"]
                     timestamp = int(row["QPCTime"]) / self.qpc_frequency
+                    if self.displayed:
+                        if row.get("Dropped") != "0":
+                            continue
+                        delay = float(row["msUntilDisplayed"])
+                        if not math.isfinite(delay) or delay < 0:
+                            continue
+                        timestamp += delay / 1000
                     if math.isfinite(interval) and interval > 0 and int(row["ProcessID"]) == self.pid:
                         with self.lock:
                             self.samples.append((timestamp, chain, interval))
                             self.runtime = row.get("Runtime")
+                            previous = self.deliveries.get(chain)
+                            if previous is None or timestamp > previous[0]:
+                                # Arrival time is stream-health metadata only.
+                                # It never replaces a frame's QPC timestamp.
+                                self.deliveries[chain] = (timestamp, time.perf_counter())
+                                self.deliveries.move_to_end(chain)
+                                if len(self.deliveries) > 256:
+                                    self.deliveries.popitem(last=False)
                 except (KeyError, ValueError, TypeError):
                     continue
 
@@ -87,16 +112,28 @@ class FpsCounter:
         now = time.perf_counter()
         with self.lock:
             samples = list(self.samples)
+            deliveries = dict(self.deliveries)
+        latest = {}
+        for timestamp, chain, _ in samples:
+            if timestamp <= now:
+                latest[chain] = max(timestamp, latest.get(chain, float("-inf")))
+        live = {}
+        for chain, timestamp in latest.items():
+            age = now - timestamp
+            delivery = deliveries.get(chain)
+            recently_delivered = delivery is not None and 0 <= now - delivery[1] <= self.FRESH_SECONDS
+            if age <= self.FRESH_SECONDS or (age <= self.MAX_DELIVERY_LAG_SECONDS and recently_delivered):
+                live[chain] = timestamp
         recent_counts = {}
         for timestamp, chain, _ in samples:
-            if 0 <= now - timestamp <= 1.5:
+            if chain in live and 0 <= live[chain] - timestamp <= self.FRESH_SECONDS:
                 recent_counts[chain] = recent_counts.get(chain, 0) + 1
         if not recent_counts:
             return []
         candidate = max(recent_counts, key=recent_counts.get)
         if self.active_chain not in recent_counts:
             if self.active_chain is not None:
-                self.chain_started_at = now
+                self.chain_started_at = latest[candidate]
             self.active_chain = candidate
             self.pending_chain = None
         elif candidate != self.active_chain and recent_counts[candidate] >= recent_counts[self.active_chain] * 1.5:
@@ -104,7 +141,7 @@ class FpsCounter:
                 self.pending_chain, self.pending_since = candidate, now
             elif now - self.pending_since >= .5:
                 self.active_chain = candidate
-                self.chain_started_at = now
+                self.chain_started_at = latest[candidate]
                 self.pending_chain = None
         else:
             self.pending_chain = None
@@ -136,4 +173,5 @@ class FpsCounter:
         self.chain_started_at = float("-inf")
         with self.lock:
             self.samples.clear()
+            self.deliveries.clear()
             self.runtime = None

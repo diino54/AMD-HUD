@@ -2,7 +2,7 @@
 
 Read [AGENTS.md](../AGENTS.md) first. This guide covers reproducible commands,
 test scope, and safe operation of the existing application. Commands below assume
-PowerShell with the working directory set to the project root.
+Command Prompt (CMD) with the working directory set to the project root.
 
 ## Local environment
 
@@ -13,22 +13,20 @@ requirements that exclude every other AMD GPU or CPU.
 
 For an existing installation, use its venv; do not recreate or upgrade it unnecessarily:
 
-```powershell
-& .\.venv\Scripts\python.exe --version
-& .\.venv\Scripts\python.exe -m pip show amd-adlx PySide6
-& .\.venv\Scripts\python.exe -c "import tkinter; import adlx; import PySide6"
+```cmd
+.\.venv\Scripts\python.exe --version
+.\.venv\Scripts\python.exe -m pip show amd-adlx PySide6
+.\.venv\Scripts\python.exe -c "import tkinter; import adlx; import PySide6"
 ```
 
 For a fresh GitHub checkout, create a local configuration from the public example
 before the first launch. Do not overwrite an existing configuration:
 
-```powershell
+```cmd
 py -3.12 -m venv .venv
-& .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-if (-not (Test-Path -LiteralPath .\config.json)) {
-    Copy-Item -LiteralPath .\config.example.json -Destination .\config.json
-}
-& .\Create-DesktopShortcut.ps1
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+if not exist config.json copy config.example.json config.json
+.\Create-DesktopShortcut.cmd
 ```
 
 The dependency install needs access to the package source. These commands do not
@@ -59,11 +57,11 @@ already-passing suite without a new change, failure, or unresolved concern.
 
 ### Automated commands
 
-```powershell
-& .\.venv\Scripts\python.exe -m unittest -q test_hud test_settings
-& .\.venv\Scripts\python.exe -m unittest -v test_hud.FpsTests
-& .\.venv\Scripts\python.exe -m unittest -v test_hud.WindowVisibilityTests
-& .\.venv\Scripts\python.exe -m unittest -v test_settings
+```cmd
+.\.venv\Scripts\python.exe -m unittest -q test_hud test_settings
+.\.venv\Scripts\python.exe -m unittest -v test_hud.FpsTests
+.\.venv\Scripts\python.exe -m unittest -v test_hud.WindowVisibilityTests
+.\.venv\Scripts\python.exe -m unittest -v test_settings
 ```
 
 The last full run before this documentation review passed 27 tests. Treat the count
@@ -91,9 +89,9 @@ the failing checks to obtain a green result.
 
 ## Diagnostics
 
-```powershell
-& .\.venv\Scripts\python.exe hud.py --probe
-& .\.venv\Scripts\python.exe hud.py --probe-game
+```cmd
+.\.venv\Scripts\python.exe hud.py --probe
+.\.venv\Scripts\python.exe hud.py --probe-game
 ```
 
 `--probe` reads actual ADLX/CPU data and prints JSON. It does not start frame capture,
@@ -104,8 +102,8 @@ is expected. These outputs may contain personal paths; do not publish them unrev
 
 ### Smoke test
 
-```powershell
-& .\.venv\Scripts\python.exe hud.py --smoke-test
+```cmd
+.\.venv\Scripts\python.exe hud.py --smoke-test
 ```
 
 Stop the existing HUD gracefully first. Otherwise the instance guard exits with an
@@ -126,14 +124,14 @@ FPS. An empty graph or `N/A` FPS there is expected without a recognized game PID
 Prefer **Stop HUD** in settings or the project's `HudControl` event to process kills.
 Inspect state from a console without creating a second HUD:
 
-```powershell
-& .\.venv\Scripts\python.exe -c "from pathlib import Path; from hud_control import HudControl; c=HudControl(Path.cwd()); print(c.running()); c.close()"
+```cmd
+.\.venv\Scripts\python.exe -c "from pathlib import Path; from hud_control import HudControl; c=HudControl(Path.cwd()); print(c.running()); c.close()"
 ```
 
 To request shutdown:
 
-```powershell
-& .\.venv\Scripts\python.exe -c "from pathlib import Path; from hud_control import HudControl; c=HudControl(Path.cwd()); c.send('stop'); c.close()"
+```cmd
+.\.venv\Scripts\python.exe -c "from pathlib import Path; from hud_control import HudControl; c=HudControl(Path.cwd()); c.send('stop'); c.close()"
 ```
 
 Remember whether it was running, wait for the mutex to disappear, validate, and
@@ -172,7 +170,11 @@ unnecessarily. A desktop focus test is not a manual Alt+Tab/game rendering test.
 4. Alt+Tab out/in; verify hiding, fresh history, no focus theft, and no stale game values.
 5. Exercise manual hide, stop, and saved-config preview. Preview should not save edits.
 6. Check border/shadow on a contrasting desktop; translucent corners must not turn black.
-7. Edit a setting, navigate tabs, cancel close, save explicitly, and test a stale-editor
+7. With a recognized game and LS output on the same monitor, verify the additional
+   LSFG row below FPS, compare it with LS output, stop scaling, and verify that the
+   row disappears and the graph returns to its original position. An open LS
+   settings window alone must not create the row. Alt+Tab must stop both captures.
+8. Edit a setting, navigate tabs, cancel close, save explicitly, and test a stale-editor
    conflict using a disposable config rather than destroying live settings.
 
 Only claim the items actually observed. Do not launch or manipulate a user's game
@@ -180,9 +182,9 @@ session unnecessarily for an unrelated documentation or palette edit.
 
 ## Icon and shortcut workflow
 
-```powershell
-& .\.venv\Scripts\python.exe tools\build_icon.py
-& .\Create-DesktopShortcut.ps1
+```cmd
+.\.venv\Scripts\python.exe tools\build_icon.py
+.\Create-DesktopShortcut.cmd
 ```
 
 Rebuild only when the SVG changes. The generator writes a PNG preview and a multi-size
@@ -190,12 +192,20 @@ ICO (16, 20, 24, 32, 40, 48, 64, 128, 256 px). Settings and HUD refer to the ICO
 The shortcut points directly to `pythonw.exe` and quoted `settings.py`, with the
 project working directory, and is updated under one stable name.
 
+The CMD launcher uses Windows Script Host (`cscript.exe`) and the bundled
+`tools/create_shortcut.vbs` helper to create the shortcut without PowerShell.
 The desktop is resolved by Windows, including redirected desktops. A scratch check
 can use an existing writable directory:
 
-```powershell
-& .\Create-DesktopShortcut.ps1 -DestinationDirectory 'C:\Path\To\Scratch'
+```cmd
+.\Create-DesktopShortcut.cmd "C:\Path\To\Scratch"
 ```
+
+Run `Create-StartMenuShortcut.cmd` to create or refresh the same `AMD HUD.lnk`
+in the current user's Start menu Programs folder, resolved by Windows Script Host.
+It uses the shared helper and the same target, arguments, working directory, and
+icon as the desktop shortcut. It also accepts an optional destination directory
+as its first argument for a scratch check. No administrator privileges are needed.
 
 Refresh the actual desktop shortcut after every completed change as required by
 `AGENTS.md`; scratch output is not a substitute for that final step.

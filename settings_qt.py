@@ -4,7 +4,7 @@ import ntpath
 import subprocess
 import sys
 import ctypes
-from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QSize, QPointF, QVariantAnimation, QLocale
+from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QSize, QPointF, QVariantAnimation, QLocale, QSettings
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIntValidator, QPainter, QPen, QPixmap, QRadialGradient
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QCheckBox, QTabWidget, QScrollArea, QColorDialog,
@@ -324,10 +324,52 @@ class SettingsApp(QWidget):
         actions.addWidget(self.save_button)
         layout.addLayout(actions)
         self.load()
+        self.restore_ui_state()
+        self.size_save_timer = QTimer(self)
+        self.size_save_timer.setSingleShot(True)
+        self.size_save_timer.setInterval(250)
+        self.size_save_timer.timeout.connect(self.save_window_size)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_status)
         self.timer.start(750)
         self.poll_status()
+
+    def restore_ui_state(self):
+        self.ui_state = QSettings(str(ROOT / "settings-ui.ini"), QSettings.IniFormat)
+        self.ui_state.setFallbacksEnabled(False)
+        size = self.ui_state.value("window_size")
+        if isinstance(size, QSize) and size.width() > 0 and size.height() > 0:
+            self.resize(size.expandedTo(self.minimumSize()))
+        for key, section in self.sections.items():
+            expanded = str(self.ui_state.value("sections/" + key, "true")).lower() != "false"
+            section.set_expanded(expanded, animated=False)
+            section.header.toggled.connect(
+                lambda value, name=key: self.save_ui_state("sections/" + name, value))
+        selected = self.ui_state.value("selected_tab", "appearance")
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index).lower() == selected:
+                self.tabs.setCurrentIndex(index)
+                break
+        self.tabs.currentChanged.connect(lambda index: self.save_ui_state(
+            "selected_tab", self.tabs.tabText(index).lower()))
+
+    def save_ui_state(self, key, value):
+        self.ui_state.setValue(key, value)
+        self.ui_state.sync()
+        if self.ui_state.status() != QSettings.NoError:
+            self.say("Could not save the settings window state.", True)
+            print("Could not save settings window state: " + self.ui_state.fileName(), file=sys.stderr)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "size_save_timer") and not self.isMaximized() and not self.isMinimized():
+            self.size_save_timer.start()
+
+    def save_window_size(self):
+        self.size_save_timer.stop()
+        size = self.normalGeometry().size() if self.isMaximized() or self.isMinimized() else self.size()
+        if size.isValid():
+            self.save_ui_state("window_size", size)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -744,6 +786,7 @@ class SettingsApp(QWidget):
             if box.clickedButton() == save and not self.save():
                 event.ignore()
                 return
+        self.save_window_size()
         self.timer.stop()
         self.control.close()
         event.accept()

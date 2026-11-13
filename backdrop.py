@@ -3,6 +3,7 @@ import ctypes as c
 from ctypes import wintypes as w
 import os
 import math
+from composition_backdrop import RoundedBackdrop
 
 
 def rounded_pixels(width, height, radius, color, border, opacity=1.0, border_only=False,
@@ -81,18 +82,11 @@ def shadow_pixels(width, height, radius, color, opacity, blur):
     return canvas_width, canvas_height, bytes(pixels)
 
 
-class Accent(c.Structure):
-    _fields_ = [("state", w.DWORD), ("flags", w.DWORD), ("color", w.DWORD), ("animation", w.DWORD)]
-
-
-class Composition(c.Structure):
-    _fields_ = [("attribute", c.c_int), ("data", c.c_void_p), ("size", c.c_size_t)]
-
-
 class AcrylicBackdrop:
     def __init__(self, foreground, color, opacity, *, material=True, border="#403d52", border_only=False,
                  border_width=1, border_opacity=1.0, shadow=None):
         self.window = None
+        self.composition = None
         self.foreground = foreground
         self.material, self.color, self.opacity = material, color, opacity
         self.border, self.border_only = border, border_only
@@ -119,8 +113,6 @@ class AcrylicBackdrop:
                                           c.c_int, c.c_int, c.c_int, c.c_int,
                                           w.HWND, w.HMENU, w.HINSTANCE, c.c_void_p]
         self.u.CreateWindowExW.restype = w.HWND
-        self.u.SetWindowCompositionAttribute.argtypes = [w.HWND, c.POINTER(Composition)]
-        self.u.SetWindowCompositionAttribute.restype = w.BOOL
         self.u.SetWindowPos.argtypes = [w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT]
         self.u.SetWindowPos.restype = w.BOOL
         self.u.GetWindowRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
@@ -139,7 +131,7 @@ class AcrylicBackdrop:
 
         self.callback = self.callback_type(procedure)
         self.instance = self.k.GetModuleHandleW(None)
-        self.class_name = "AMDHUD_Backdrop_" + str(os.getpid()) + ("_shadow" if shadow is not None else "_material" if material else "_rgba")
+        self.class_name = "AMDHUD_Backdrop_" + str(os.getpid()) + "_" + str(id(self))
         wc = WindowClass()
         wc.procedure, wc.instance, wc.name = self.callback, self.instance, self.class_name
         if not self.u.RegisterClassW(c.byref(wc)):
@@ -148,21 +140,19 @@ class AcrylicBackdrop:
             # Own window, no redirection bitmap and no painted client background.
             self.window = self.u.CreateWindowExW(0x082000A8 if material else 0x080800A8,
                                                   self.class_name, "AMD HUD backdrop",
-                                                  0x80040000 if material else 0x80000000,
+                                                  0x80000000,
                                                   0, 0, 1, 1, None, None, self.instance, None)
             if not self.window:
                 raise c.WinError(c.get_last_error())
             if material:
-                preference = c.c_int(2)
-                if self.dwm.DwmSetWindowAttribute(self.window, 33, c.byref(preference), c.sizeof(preference)) < 0:
-                    raise RuntimeError("Windows cannot round the acrylic backdrop")
-            rgb = color.lstrip("#")
-            red, green, blue = (int(rgb[i:i + 2], 16) for i in (0, 2, 4))
-            tint = (max(1, round(opacity * 255)) << 24) | (blue << 16) | (green << 8) | red
-            accent = Accent(4, 0, tint, 0)
-            data = Composition(19, c.cast(c.pointer(accent), c.c_void_p), c.sizeof(accent))
-            if material and not self.u.SetWindowCompositionAttribute(self.window, c.byref(data)):
-                raise RuntimeError("Windows rejected the acrylic backdrop")
+                # The compositor clips both live host blur and tint, without
+                # applying a binary GDI region or DWM's fixed-radius corners.
+                enabled, square = w.BOOL(True), c.c_int(1)
+                result = self.dwm.DwmSetWindowAttribute(self.window, 17, c.byref(enabled), c.sizeof(enabled))
+                if result < 0:
+                    raise RuntimeError("Windows rejected the host backdrop brush")
+                self.dwm.DwmSetWindowAttribute(self.window, 33, c.byref(square), c.sizeof(square))
+                self.composition = RoundedBackdrop(self.window, color, opacity)
             self.last_size = None
         except Exception:
             self.close()
@@ -192,12 +182,7 @@ class AcrylicBackdrop:
             self.paint(width, height, radius, rect.left, rect.top)
             self.last_size = shape
         if self.material and shape != self.last_size:
-            # A GDI window region breaks acrylic alpha on Windows 11. Let DWM
-            # clip its own material instead; 2=round (8px), 1=square.
-            preference = c.c_int(2 if radius else 1)
-            result = self.dwm.DwmSetWindowAttribute(self.window, 33, c.byref(preference), c.sizeof(preference))
-            if result < 0:
-                raise RuntimeError("Windows cannot round the acrylic backdrop")
+            self.composition.resize(width, height, radius)
             self.last_size = shape
         # Insert immediately below the text window, without taking focus.
         self.u.SetWindowPos(self.window, self.foreground, x, y, width, height, 0x50)
@@ -248,7 +233,12 @@ class AcrylicBackdrop:
             self.g.DeleteDC(dc)
 
     def close(self):
-        if self.window:
-            self.u.DestroyWindow(self.window)
-            self.window = None
-        self.u.UnregisterClassW(self.class_name, self.instance)
+        try:
+            if self.composition:
+                self.composition.close()
+                self.composition = None
+        finally:
+            if self.window:
+                self.u.DestroyWindow(self.window)
+                self.window = None
+            self.u.UnregisterClassW(self.class_name, self.instance)

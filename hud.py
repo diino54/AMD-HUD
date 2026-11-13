@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 from adlx import ADLX
-from game_visibility import GameDetector
+from game_visibility import GameDetector, LosslessScalingDetector
 from fps_counter import FpsCounter
 from single_instance import SingleInstance
 from cpu_temperature import CpuTemperature
@@ -20,13 +20,14 @@ from hud_control import HudControl
 from font_support import DEFAULT_FONT, PrivateFont
 from frametime_graph import GraphReveal, GraphScale, graph_columns, render_plot
 from window_visibility import HudWindowVisibility, prevent_window_activation
+from composition_backdrop import close_composition_runtime
 
 ROOT = Path(__file__).resolve().parent
 GRAPH_WINDOW_SECONDS = 7.0
 
 
 class HudPanel(tk.Canvas):
-    """Four fixed rows with Rosé Pine accents and a rounded one-pixel border."""
+    """Four base rows plus an automatic LSFG output row when available."""
     def __init__(self, parent, config):
         self.config = config
         self.private_font = None
@@ -45,6 +46,7 @@ class HudPanel(tk.Canvas):
         self.right_width = max(self.text_font.measure("0" * 12), self.text_font.measure("100.0°C"))
         self.panel_width = self.label_width + self.middle_width + self.right_width + 32
         self.panel_height = self.line_height * 4 + 24
+        self.metric_rows = 4
         if config.get("frametime_graph", True):
             self.graph_font = tkfont.Font(root=parent, family=family, size=max(8, config["font_size"] - 2))
             self.graph_top = self.line_height * 4 + 24
@@ -54,15 +56,24 @@ class HudPanel(tk.Canvas):
         self.set_text(format_layout({}))
 
     def set_text(self, text):
+        rows = text.splitlines()[:5]
+        delta = (len(rows) - self.metric_rows) * self.line_height
+        if delta:
+            self.metric_rows = len(rows)
+            self.panel_height += delta
+            self.configure(height=self.panel_height)
+            if self.config.get("frametime_graph", True):
+                self.graph_top += delta
+                self.move("frametime", 0, delta)
         self.delete("metrics")
         # Background and border are rendered by the per-pixel-alpha layer.
         accents = self.config.get("row_colors", ["#9ccfd8", "#c4a7e7", "#f6c177", "#eb6f92"])
-        for index, line in enumerate(text.splitlines()[:4]):
+        for index, line in enumerate(rows):
             y = 12 + self.line_height * index
             cells = (line[:10].rstrip(), line[10:19].strip(), line[19:].strip())
             for column, (x, anchor) in enumerate(((16, "nw"),
                     (16 + self.label_width + self.middle_width, "ne"), (self.panel_width - 16, "ne"))):
-                color = accents[index % len(accents)] if column == 0 else self.config["text_color"]
+                color = accents[min(index, 3) % len(accents)] if column == 0 else self.config["text_color"]
                 if cells[column] == "N/A":
                     color = self.config.get("muted_color", "#6e6a86")
                 self.create_text(x, y, anchor=anchor, text=cells[column], font=self.text_font, fill=color, tags="metrics")
@@ -83,7 +94,8 @@ class HudPanel(tk.Canvas):
                                        fill=text_color, tags="frametime")
             statistics = self.create_text(right, self.graph_top, anchor="ne", font=self.graph_font,
                                           fill=text_color, tags="frametime")
-            self._graph_photo = tk.PhotoImage(master=self)
+            self._graph_photos = (tk.PhotoImage(master=self), tk.PhotoImage(master=self))
+            self._graph_photo = self._graph_photos[0]
             line = self.create_image(left, top, anchor="nw", image=self._graph_photo,
                                      state="hidden", tags="frametime")
             self._graph_items = waiting, statistics, line
@@ -94,24 +106,28 @@ class HudPanel(tk.Canvas):
         waiting_item, statistics_item, line_item = self._graph_items
         now = time.perf_counter()
         revealed, cursor = self._graph_reveal.update(samples, now, GRAPH_WINDOW_SECONDS)
-        columns = graph_columns(revealed, cursor, GRAPH_WINDOW_SECONDS, right - left + 1, subpixel=True)
+        viewport = self._graph_reveal.viewport if revealed else now
+        columns = graph_columns(revealed, viewport, GRAPH_WINDOW_SECONDS, right - left + 1, subpixel=True)
         # Always keep the progressively clipped tip, even when peak reduction
         # selects a different sample in the final time bucket.
-        if revealed and revealed[-1][0] == cursor:
-            tip = right - left, revealed[-1][1]
+        if revealed and revealed[-1][0] == cursor and 0 <= viewport - cursor <= GRAPH_WINDOW_SECONDS:
+            tip = (1 - (viewport - cursor) / GRAPH_WINDOW_SECONDS) * (right - left), revealed[-1][1]
             if columns and abs(columns[-1][0] - tip[0]) < 1e-6:
                 columns[-1] = tip
             else:
                 columns.append(tip)
-        if bool(columns) != self._graph_has_data:
-            self.itemconfigure(waiting_item, state="hidden" if columns else "normal")
-            self.itemconfigure(statistics_item, state="normal" if columns else "hidden")
-            self.itemconfigure(line_item, state="normal" if columns else "hidden")
-            self._graph_has_data = bool(columns)
+        intervals = [interval for stamp, interval in samples
+                     if viewport - GRAPH_WINDOW_SECONDS <= stamp <= cursor]
+        if not intervals:
+            columns = []
         if not columns:
+            if self._graph_has_data:
+                self.itemconfigure(waiting_item, state="normal")
+                self.itemconfigure(statistics_item, state="hidden")
+                self.itemconfigure(line_item, state="hidden")
+                self._graph_has_data = False
             self._graph_scale = GraphScale()
             return
-        intervals = [interval for stamp, interval in samples if cursor - GRAPH_WINDOW_SECONDS <= stamp <= cursor]
         minimum, maximum = min(intervals), max(intervals)
         statistics = f"min {minimum:.1f} | max {maximum:.1f} ms"
         if self.graph_font.measure(statistics) + self.graph_font.measure("Frametime") + 12 > right - left:
@@ -123,7 +139,17 @@ class HudPanel(tk.Canvas):
         points = [(column, (1 - interval / ceiling) * (bottom - top)) for column, interval in columns]
         pixels = render_plot(points, right - left + 1, bottom - top + 2, color,
                              self.config["background_color"])
-        self._graph_photo.configure(data=pixels, format="png")
+        # Decode into an unattached image. Reconfiguring the displayed Tk photo
+        # exposes its intermediate changes to canvas image invalidation.
+        back = self._graph_photos[1] if self._graph_photo is self._graph_photos[0] else self._graph_photos[0]
+        back.configure(data=pixels, format="png")
+        self.itemconfigure(line_item, image=back)
+        self._graph_photo = back
+        if not self._graph_has_data:
+            self.itemconfigure(waiting_item, state="hidden")
+            self.itemconfigure(statistics_item, state="normal")
+            self.itemconfigure(line_item, state="normal")
+            self._graph_has_data = True
 
     def destroy(self):
         try:
@@ -147,7 +173,7 @@ METRICS = {
 }
 
 
-def format_layout(values, api_label="FPS"):
+def format_layout(values, api_label="FPS", *, lsfg_active=False, lsfg_fps=None):
     def value(key, unit, decimals=0):
         reading = values.get(key)
         return "N/A" if reading is None else f"{reading:.{decimals}f}{unit}"
@@ -160,6 +186,8 @@ def format_layout(values, api_label="FPS"):
         ("RAM", value("ram", " GiB", 1), ""),
         (api_label, value("fps", " FPS"), frametime),
     ]
+    if lsfg_active:
+        rows.append(("LSFG", "N/A" if lsfg_fps is None else f"{lsfg_fps:.0f} FPS", ""))
     return "\n".join(f"{caption:<10}{middle:>9}{right:>12}" for caption, middle, right in rows)
 
 
@@ -291,17 +319,20 @@ class Monitor:
             self.initialized = False
 
 
+def background_config(config):
+    """Skip blur only for fully opaque backgrounds, preserving custom corners."""
+    config = dict(config)
+    blur = config.get("blur", False)
+    opacity = config.get("blur_opacity", 0.88)
+    use_acrylic = blur and opacity < 1
+    if blur:
+        config["opacity"] = opacity
+    return config, use_acrylic
+
+
 @prevent_window_activation()
 def show_hud(monitor, config, smoke_test=False, control=None):
-    # A fully opaque material has no visible blur: avoid an unnecessary native
-    # backing window. For translucent acrylic use Windows' native 8px corners
-    # on both layers so the material and the drawn border match exactly.
-    config = dict(config)
-    use_acrylic = config.get("blur", False) and config.get("blur_opacity", 0.88) < 1
-    if config.get("blur", False) and not use_acrylic:
-        config["opacity"] = 1.0
-    if use_acrylic and config["corner_radius"]:
-        config["corner_radius"] = 8
+    config, use_acrylic = background_config(config)
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.GetParent.argtypes = [wintypes.HWND]
     user32.GetParent.restype = wintypes.HWND
@@ -328,7 +359,13 @@ def show_hud(monitor, config, smoke_test=False, control=None):
     registered = []
     samples = [0]
     detector = GameDetector(config)
+    scaling_detector = LosslessScalingDetector(detector)
     fps_counter = FpsCounter()
+    lsfg_counter = FpsCounter(displayed=True)
+    lsfg_source = [None]
+    lsfg_capture_source = [None]
+    game_source = [None]
+    displayed_values = [{}]
     manual_hidden = [False]
     visible = [False]
     backdrop = None
@@ -346,6 +383,11 @@ def show_hud(monitor, config, smoke_test=False, control=None):
                                    "; Win32 error " + str(ctypes.get_last_error()))
             registered.append(identifier)
 
+        def draw_metrics():
+            label.set_text(format_layout(displayed_values[0], fps_counter.api_label(),
+                                         lsfg_active=lsfg_source[0] is not None,
+                                         lsfg_fps=lsfg_counter.value() if lsfg_capture_source[0] == lsfg_source[0] else None))
+
         def refresh():
             if not visible[0] and not smoke_test:
                 root.after(config["refresh_ms"], refresh)
@@ -354,10 +396,12 @@ def show_hud(monitor, config, smoke_test=False, control=None):
                 snapshot = monitor.read(config["metrics"])
                 if "fps" in snapshot["metrics"]:
                     snapshot["metrics"]["fps"] = fps_counter.value()
-                label.set_text(format_layout(snapshot["metrics"], fps_counter.api_label()))
+                displayed_values[0] = snapshot["metrics"]
+                draw_metrics()
                 samples[0] += 1
             except Exception as exc:
-                label.set_text(format_layout({}))
+                displayed_values[0] = {}
+                draw_metrics()
                 print("ADLX read error: " + str(exc), file=sys.stderr)
             root.after(config["refresh_ms"], refresh)
 
@@ -429,11 +473,26 @@ def show_hud(monitor, config, smoke_test=False, control=None):
             target = detector.current_target()
             should_show = not manual_hidden[0] and (smoke_test or time.monotonic() < preview_until[0]
                                                    or not config["games_only"] or target is not None)
+            scaling = scaling_detector.current_target(target) if should_show and "fps" in config["metrics"] else None
+            source = (target["pid"], scaling["pid"], scaling["window"]) if scaling else None
+            scaling_changed = source != lsfg_source[0]
+            if scaling_changed:
+                lsfg_source[0] = source
+            current_game = target["pid"] if should_show and target else None
+            game_changed = current_game != game_source[0]
+            game_source[0] = current_game
+            if game_changed:
+                displayed_values[0] = {}
+                label.set_frametimes([])
+            if scaling_changed or game_changed:
+                draw_metrics()
+                root.update_idletasks()
             if should_show != visible[0]:
                 visible[0] = should_show
                 if should_show:
                     # Discard the last game's displayed values before revealing the panel.
-                    label.set_text(format_layout({}))
+                    displayed_values[0] = {}
+                    draw_metrics()
                     label.set_frametimes([])
                 window_visibility.set_visible(should_show)
             elif should_show:
@@ -447,6 +506,11 @@ def show_hud(monitor, config, smoke_test=False, control=None):
             smooth_frame.sync(should_show, config["corner_radius"])
             capture_needed = "fps" in config["metrics"] or config["frametime_graph"]
             fps_counter.target(target["pid"] if should_show and target and capture_needed else None)
+            if scaling_changed:
+                # Hide/update native layers before capture cleanup can block.
+                lsfg_counter.target(None)
+            lsfg_counter.target(source[1] if source else None)
+            lsfg_capture_source[0] = source
             root.after(200, poll_visibility)
 
         poll_visibility()
@@ -464,7 +528,10 @@ def show_hud(monitor, config, smoke_test=False, control=None):
             smooth_frame.close()
         if backdrop:
             backdrop.close()
-        fps_counter.stop()
+        try:
+            fps_counter.stop()
+        finally:
+            lsfg_counter.stop()
         for identifier in registered:
             user32.UnregisterHotKey(None, identifier)
         try:
@@ -523,6 +590,7 @@ def main():
                 instance.close()
             if control:
                 control.close()
+            close_composition_runtime()
 
 
 if __name__ == "__main__":
